@@ -2,3 +2,4 @@ watchdog
 faster-whisper
 anthropic
 python-dotenv
+setproctitle

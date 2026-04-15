@@ -11,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 import anthropic
+from setproctitle import setproctitle
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -300,6 +301,7 @@ class ZipHandler(FileSystemEventHandler):
 
 
 def main():
+    setproctitle("auto_transcript")
     log.info("=== Auto Transcript 启动 ===")
     log.info("监听目录: %s", AUDIO_ZIP_DIR)
     log.info("转录输出: %s", TRANSCRIPT_DIR)
