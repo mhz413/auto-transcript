@@ -1,0 +1,4 @@
+watchdog
+faster-whisper
+openai
+python-dotenv

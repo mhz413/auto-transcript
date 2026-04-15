@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+安装: cp com.hz.auto-transcript.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.hz.auto-transcript.plist
+卸载: launchctl unload ~/Library/LaunchAgents/com.hz.auto-transcript.plist && rm ~/Library/LaunchAgents/com.hz.auto-transcript.plist
+查看状态: launchctl list | grep auto-transcript
+查看日志: tail -f ~/Library/Logs/auto-transcript.log
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.hz.auto-transcript</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/hz/Dev/auto_transcript/main.py</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/hz/Dev/auto_transcript</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/hz/Library/Logs/auto-transcript.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/hz/Library/Logs/auto-transcript.log</string>
+</dict>
+</plist>
