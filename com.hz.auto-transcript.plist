@@ -12,8 +12,7 @@
 	<string>com.hz.auto-transcript</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/bin/python3</string>
-		<string>/Users/hz/Dev/auto_transcript/main.py</string>
+		<string>/Users/hz/Dev/auto_transcript/auto_transcript</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>/Users/hz/Dev/auto_transcript</string>

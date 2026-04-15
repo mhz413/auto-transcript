@@ -1,0 +1,2 @@
+#!/bin/bash
+exec /usr/bin/python3 /Users/hz/Dev/auto_transcript/main.py
