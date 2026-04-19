@@ -236,27 +236,34 @@ def next_process_time() -> datetime:
 def scheduled_processor(whisper_model: WhisperModel, llm_client: anthropic.Anthropic):
     """后台线程：每天凌晨 PROCESS_HOUR 点处理队列中的所有 zip"""
     while True:
-        target = next_process_time()
-        wait_seconds = (target - datetime.now()).total_seconds()
-        log.info("下次处理时间: %s", target.strftime("%Y-%m-%d %H:%M"))
-
-        # 分段 sleep，便于响应退出信号
-        while wait_seconds > 0:
-            time.sleep(min(wait_seconds, 60))
+        try:
+            target = next_process_time()
             wait_seconds = (target - datetime.now()).total_seconds()
+            log.info("下次处理时间: %s", target.strftime("%Y-%m-%d %H:%M"))
 
-        with _pending_lock:
-            zips_to_process = [p for p in _pending_zips if p.exists()]
-            _pending_zips.clear()
+            # 分段 sleep，便于响应退出信号
+            while wait_seconds > 0:
+                time.sleep(min(wait_seconds, 60))
+                wait_seconds = (target - datetime.now()).total_seconds()
 
-        if zips_to_process:
-            log.info("定时处理开始，共 %d 个 ZIP 文件", len(zips_to_process))
-            retry_pending_summaries(llm_client)
-            for zp in zips_to_process:
-                process_zip(zp, whisper_model, llm_client)
-        else:
-            log.info("定时检查：无待处理文件，补全摘要中...")
-            retry_pending_summaries(llm_client)
+            with _pending_lock:
+                zips_to_process = [p for p in _pending_zips if p.exists()]
+                _pending_zips.clear()
+
+            if zips_to_process:
+                log.info("定时处理开始，共 %d 个 ZIP 文件", len(zips_to_process))
+                retry_pending_summaries(llm_client)
+                for zp in zips_to_process:
+                    try:
+                        process_zip(zp, whisper_model, llm_client)
+                    except Exception:
+                        log.exception("处理 ZIP 失败，已跳过: %s", zp.name)
+            else:
+                log.info("定时检查：无待处理文件，补全摘要中...")
+                retry_pending_summaries(llm_client)
+        except Exception:
+            log.exception("调度线程发生未知错误，60 秒后重试...")
+            time.sleep(60)
 
 
 class ZipHandler(FileSystemEventHandler):
