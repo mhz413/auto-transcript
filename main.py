@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -60,6 +61,15 @@ SUMMARY_SYSTEM_PROMPT = """你是一位专业的投资研究助手，擅长从�
 # 待处理 zip 队列（watchdog 检测到后加入，定时器统一处理）
 _pending_zips: list[Path] = []
 _pending_lock = threading.Lock()
+
+
+def notify(title: str, message: str):
+    """发送 macOS 系统通知（静默失败，不影响主流程）"""
+    try:
+        script = f'display notification "{message}" with title "{title}"'
+        subprocess.run(["osascript", "-e", script], timeout=5, capture_output=True)
+    except Exception:
+        pass
 
 
 def format_timestamp(seconds: float) -> str:
@@ -181,28 +191,36 @@ def process_zip(zip_path: Path, whisper_model: WhisperModel, llm_client: anthrop
 
     if not audio_files:
         log.warning("ZIP 中未找到音频文件: %s", zip_path.name)
+        notify("Auto Transcript", f"⚠️ {zip_path.name} 中无音频文件")
+        return
     else:
         log.info("找到 %d 个音频文件", len(audio_files))
+        notify("Auto Transcript", f"开始转写 {zip_path.name}（共 {len(audio_files)} 个文件）")
 
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 
-    for audio_file in audio_files:
+    success_count = 0
+    for idx, audio_file in enumerate(audio_files, 1):
         md_filename = f"{file_date}_{audio_file.stem}.md"
         md_path = TRANSCRIPT_DIR / md_filename
         try:
+            notify("Auto Transcript ⏳", f"[{idx}/{len(audio_files)}] 转写中：{audio_file.stem}")
             transcript = transcribe(whisper_model, audio_file)
 
             # 转写完立即落盘，防止后续步骤失败导致转写内容丢失
             md_path.write_text(build_transcript_markdown(audio_file.name, transcript, file_date), encoding="utf-8")
             log.info("转录已保存: %s", md_path.name)
 
+            notify("Auto Transcript ⏳", f"[{idx}/{len(audio_files)}] 生成摘要：{audio_file.stem}")
             summary = summarize(llm_client, transcript)
 
             # 摘要成功，更新文件为完整版本
             md_path.write_text(build_full_markdown(audio_file.name, summary, transcript, file_date), encoding="utf-8")
             log.info("摘要已更新: %s", md_path.name)
+            success_count += 1
         except Exception:
             log.exception("处理音频文件失败: %s", audio_file.name)
+            notify("Auto Transcript ❌", f"处理失败：{audio_file.stem}")
             if md_path.exists():
                 log.info("转录文件已保留: %s", md_path.name)
 
@@ -216,6 +234,7 @@ def process_zip(zip_path: Path, whisper_model: WhisperModel, llm_client: anthrop
     shutil.rmtree(batch_dir, ignore_errors=True)
     log.info("临时目录已清理: %s", batch_dir)
     log.info("========== 处理完成 ==========")
+    notify("Auto Transcript ✅", f"{zip_path.name} 完成（{success_count}/{len(audio_files)} 个文件）")
 
 
 def retry_pending_summaries(llm_client: anthropic.Anthropic):
