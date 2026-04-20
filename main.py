@@ -101,16 +101,16 @@ def summarize(client: anthropic.Anthropic, transcript: str) -> str:
     return summary
 
 
-def build_transcript_markdown(source_name: str, transcript: str) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
+def build_transcript_markdown(source_name: str, transcript: str, date: str | None = None) -> str:
+    date = date or datetime.now().strftime("%Y-%m-%d")
     stem = Path(source_name).stem
     return f"""---
-date: {today}
+date: {date}
 source: {source_name}
 summary_status: pending
 ---
 
-# {today} {stem}
+# {date} {stem}
 
 ## 核心摘要
 
@@ -122,16 +122,16 @@ summary_status: pending
 """
 
 
-def build_full_markdown(source_name: str, summary: str, transcript: str) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
+def build_full_markdown(source_name: str, summary: str, transcript: str, date: str | None = None) -> str:
+    date = date or datetime.now().strftime("%Y-%m-%d")
     stem = Path(source_name).stem
     return f"""---
-date: {today}
+date: {date}
 source: {source_name}
 summary_status: done
 ---
 
-# {today} {stem}
+# {date} {stem}
 
 ## 核心摘要
 
@@ -143,8 +143,25 @@ summary_status: done
 """
 
 
+def date_from_zip_name(stem: str) -> str:
+    """从 zip 文件名提取日期前缀，支持 MMDD（如 0417）或 YYYYMMDD 格式，失败则返回今天。"""
+    stem = stem.strip()
+    try:
+        if len(stem) == 4 and stem.isdigit():          # MMDD
+            month, day = int(stem[:2]), int(stem[2:])
+            year = datetime.now().year
+            return datetime(year, month, day).strftime("%Y-%m-%d")
+        elif len(stem) == 8 and stem.isdigit():         # YYYYMMDD
+            return datetime.strptime(stem, "%Y%m%d").strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def process_zip(zip_path: Path, whisper_model: WhisperModel, llm_client: anthropic.Anthropic):
     log.info("========== 处理 ZIP: %s ==========", zip_path.name)
+    file_date = date_from_zip_name(zip_path.stem)
+    log.info("文件日期: %s", file_date)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     batch_dir = AUDIO_FILE_DIR / f"{timestamp}_{zip_path.stem}"
 
@@ -169,20 +186,19 @@ def process_zip(zip_path: Path, whisper_model: WhisperModel, llm_client: anthrop
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 
     for audio_file in audio_files:
-        today = datetime.now().strftime("%Y-%m-%d")
-        md_filename = f"{today}_{audio_file.stem}.md"
+        md_filename = f"{file_date}_{audio_file.stem}.md"
         md_path = TRANSCRIPT_DIR / md_filename
         try:
             transcript = transcribe(whisper_model, audio_file)
 
             # 转写完立即落盘，防止后续步骤失败导致转写内容丢失
-            md_path.write_text(build_transcript_markdown(audio_file.name, transcript), encoding="utf-8")
+            md_path.write_text(build_transcript_markdown(audio_file.name, transcript, file_date), encoding="utf-8")
             log.info("转录已保存: %s", md_path.name)
 
             summary = summarize(llm_client, transcript)
 
             # 摘要成功，更新文件为完整版本
-            md_path.write_text(build_full_markdown(audio_file.name, summary, transcript), encoding="utf-8")
+            md_path.write_text(build_full_markdown(audio_file.name, summary, transcript, file_date), encoding="utf-8")
             log.info("摘要已更新: %s", md_path.name)
         except Exception:
             log.exception("处理音频文件失败: %s", audio_file.name)
@@ -190,8 +206,11 @@ def process_zip(zip_path: Path, whisper_model: WhisperModel, llm_client: anthrop
                 log.info("转录文件已保留: %s", md_path.name)
 
     DONE_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(zip_path), str(DONE_DIR / zip_path.name))
-    log.info("ZIP 已移至: %s", DONE_DIR / zip_path.name)
+    try:
+        shutil.move(str(zip_path), str(DONE_DIR / zip_path.name))
+        log.info("ZIP 已移至: %s", DONE_DIR / zip_path.name)
+    except Exception:
+        log.exception("ZIP 移动失败，保留原位: %s", zip_path.name)
 
     shutil.rmtree(batch_dir, ignore_errors=True)
     log.info("临时目录已清理: %s", batch_dir)
@@ -364,5 +383,34 @@ def main():
     log.info("=== Auto Transcript 已停止 ===")
 
 
+def run_now():
+    """立即处理 audio_zip/ 里所有 zip，处理完退出。供 agent 或手动调用。"""
+    log.info("=== Auto Transcript 立即处理模式 ===")
+    for d in [AUDIO_ZIP_DIR, AUDIO_FILE_DIR, TRANSCRIPT_DIR, DONE_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    log.info("加载 Whisper 模型...")
+    whisper_model = WhisperModel(WHISPER_MODEL_NAME, device=WHISPER_DEVICE)
+    log.info("Whisper 模型加载完成")
+    llm_client = anthropic.Anthropic(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+
+    retry_pending_summaries(llm_client)
+
+    zips = sorted(AUDIO_ZIP_DIR.glob("*.zip"))
+    if not zips:
+        log.info("audio_zip/ 中无待处理文件")
+        return
+    log.info("找到 %d 个 ZIP，开始逐一处理", len(zips))
+    for zp in zips:
+        try:
+            process_zip(zp, whisper_model, llm_client)
+        except Exception:
+            log.exception("处理失败，跳过: %s", zp.name)
+    log.info("=== 全部处理完成 ===")
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--now":
+        run_now()
+    else:
+        main()
