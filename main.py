@@ -6,6 +6,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timedelta
+from typing import Optional
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -101,7 +102,7 @@ def summarize(client: anthropic.Anthropic, transcript: str) -> str:
     return summary
 
 
-def build_transcript_markdown(source_name: str, transcript: str, date: str | None = None) -> str:
+def build_transcript_markdown(source_name: str, transcript: str, date: Optional[str] = None) -> str:
     date = date or datetime.now().strftime("%Y-%m-%d")
     stem = Path(source_name).stem
     return f"""---
@@ -122,7 +123,7 @@ summary_status: pending
 """
 
 
-def build_full_markdown(source_name: str, summary: str, transcript: str, date: str | None = None) -> str:
+def build_full_markdown(source_name: str, summary: str, transcript: str, date: Optional[str] = None) -> str:
     date = date or datetime.now().strftime("%Y-%m-%d")
     stem = Path(source_name).stem
     return f"""---
@@ -383,30 +384,51 @@ def main():
     log.info("=== Auto Transcript 已停止 ===")
 
 
+_LOCK_FILE = Path("/tmp/auto_transcript_run_now.lock")
+
+
 def run_now():
     """立即处理 audio_zip/ 里所有 zip，处理完退出。供 agent 或手动调用。"""
-    log.info("=== Auto Transcript 立即处理模式 ===")
-    for d in [AUDIO_ZIP_DIR, AUDIO_FILE_DIR, TRANSCRIPT_DIR, DONE_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
-
-    log.info("加载 Whisper 模型...")
-    whisper_model = WhisperModel(WHISPER_MODEL_NAME, device=WHISPER_DEVICE)
-    log.info("Whisper 模型加载完成")
-    llm_client = anthropic.Anthropic(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
-
-    retry_pending_summaries(llm_client)
-
-    zips = sorted(AUDIO_ZIP_DIR.glob("*.zip"))
-    if not zips:
-        log.info("audio_zip/ 中无待处理文件")
-        return
-    log.info("找到 %d 个 ZIP，开始逐一处理", len(zips))
-    for zp in zips:
+    # 互斥锁：防止多个 --now 实例并发跑，导致同一 zip 被重复解压处理
+    if _LOCK_FILE.exists():
+        existing_pid = _LOCK_FILE.read_text().strip()
         try:
-            process_zip(zp, whisper_model, llm_client)
-        except Exception:
-            log.exception("处理失败，跳过: %s", zp.name)
-    log.info("=== 全部处理完成 ===")
+            os.kill(int(existing_pid), 0)   # 0 = 只检测进程是否存在
+            log.warning("已有 --now 实例在运行（PID %s），本次退出", existing_pid)
+            return
+        except (ProcessLookupError, ValueError):
+            # 进程已不存在，锁文件是残留，可以继续
+            pass
+
+    _LOCK_FILE.write_text(str(os.getpid()))
+    try:
+        log.info("=== Auto Transcript 立即处理模式 ===")
+        for d in [AUDIO_ZIP_DIR, AUDIO_FILE_DIR, TRANSCRIPT_DIR, DONE_DIR]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        log.info("加载 Whisper 模型...")
+        whisper_model = WhisperModel(WHISPER_MODEL_NAME, device=WHISPER_DEVICE)
+        log.info("Whisper 模型加载完成")
+        llm_client = anthropic.Anthropic(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+
+        retry_pending_summaries(llm_client)
+
+        zips = sorted(AUDIO_ZIP_DIR.glob("*.zip"))
+        if not zips:
+            log.info("audio_zip/ 中无待处理文件")
+            return
+        log.info("找到 %d 个 ZIP，开始逐一处理", len(zips))
+        for zp in zips:
+            if not zp.exists():
+                log.info("ZIP 已被其他进程处理，跳过: %s", zp.name)
+                continue
+            try:
+                process_zip(zp, whisper_model, llm_client)
+            except Exception:
+                log.exception("处理失败，跳过: %s", zp.name)
+        log.info("=== 全部处理完成 ===")
+    finally:
+        _LOCK_FILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
